@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 import httpx
 from google import genai
 from google.genai import types
+import scout
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("immobot-brain")
@@ -1094,7 +1095,7 @@ def help_text() -> str:
     return (
         "🛠 <b>Telegram-Fernsteuerung &amp; Meta-Agent</b>\n\n"
         "<b>Selbstheilung &amp; Meta-Optimierung:</b>\n"
-        "• /agent [Stadtteil] – Startet Silent-Failure-Audit, Regel-Hygiene &amp; Discovery\n"
+        "• /scout [check|Stadtteil] – 5-km-Geo-Radar + Deep-Link-Jäger (fügt neue Verwalter ein)\n• /agent [Stadtteil] – Startet Silent-Failure-Audit, Regel-Hygiene &amp; Discovery\n"
         "• /agent json – Zeigt das letzte JSON-Protokoll des Meta-Agenten\n"
         "• /heilen – Löscht kaputte URLs &amp; rettet 403-Seiten per Tarnumhang\n"
         "• /stats – Treffer-/Rausch-Statistik deiner Quellen\n"
@@ -1282,6 +1283,99 @@ async def cmd_cd_add(url: str):
             await send_telegram(f"✅ Seite zu 5050 hinzugefügt:\n{html.escape(url)}")
 
 
+
+
+async def run_scout_command(auto_add: bool = True, district: str = "", manual: bool = True):
+    cd_key = get_cd_api_key()
+    api_key = get_gemini_key()
+    if not cd_key or not is_real_key(api_key):
+        if manual:
+            await send_telegram("ℹ️ Für /scout müssen <code>/cdkey</code> und Gemini-Key gesetzt sein.")
+        return
+
+    if manual:
+        await send_telegram(f"🔭 <b>Münchner 5-km-Scout gestartet...</b>\nDurchsuche Geo-Radar + Websuche nach neuen Hausverwaltungen &amp; prüfe Deep-Links + iFrames live.")
+
+    watches = {}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"{CD_API_BASE}/watch", headers={"x-api-key": cd_key})
+            if r.status_code == 200:
+                watches = r.json()
+    except Exception as exc:
+        if manual:
+            await send_telegram(f"❌ 5050 nicht erreichbar: {html.escape(str(exc)[:150])}")
+        return
+
+    if len(watches) >= 65:
+        if manual:
+            await send_telegram("ℹ️ Sicherheits-Limit von 65 Seiten in 5050 erreicht, damit dein Fujitsu schnell bleibt.")
+        return
+
+    known_domains = {urlparse(str(w.get("url", ""))).netloc.lower().replace("www.", "") for w in watches.values() if w.get("url")}
+    with sqlite3.connect(DB_PATH) as conn:
+        for (u,) in conn.execute("SELECT url FROM stealth_watches").fetchall():
+            known_domains.add(urlparse(u).netloc.lower().replace("www.", ""))
+
+    found = await scout.run_scout_pipeline(
+        api_key=api_key,
+        known_domains=known_domains,
+        blacklist_check_fn=is_blacklisted,
+        db_path=DB_PATH,
+        budget=get_budget(),
+        district=district,
+        max_probe=12,
+    )
+
+    added = 0
+    for item in found:
+        c, p, e = item["candidate"], item["page"], item["eval"]
+        if not item["accepted"]:
+            add_blacklist(c["domain"], f"Scout aussortiert: {e.ausschlussgrund}")
+            continue
+
+        if auto_add and added < 5 and (len(watches) + added) < 65:
+            async with httpx.AsyncClient(timeout=20) as client:
+                tag_uuid = await ensure_cd_tag(client, "auto-scout")
+                payload = {
+                    "url": p["url"],
+                    "title": f"[Scout] {e.firmenname[:65]}",
+                    "fetch_backend": p["fetch_backend"],
+                    "time_between_check": {"minutes": max(5, min(30, e.empfohlenes_intervall_min))},
+                    "time_between_check_use_default": False,
+                }
+                if p["fetch_backend"] == "html_webdriver":
+                    payload["webdriver_delay"] = 4
+                if tag_uuid:
+                    payload["tags"] = [tag_uuid]
+                if item["valid_filters"]:
+                    payload["include_filters"] = item["valid_filters"]
+                cr = await client.post(f"{CD_API_BASE}/watch", headers={"x-api-key": cd_key}, json=payload)
+                if cr.status_code in (200, 201):
+                    w_uuid = (cr.json() or {}).get("uuid", "")
+                    added += 1
+                    markup = {"inline_keyboard": [[{"text": "🗑 Doch raus & Blacklist", "callback_data": f"sdel:{w_uuid}"}]]} if w_uuid else None
+                    leer_badge = " (aktuell 0 Whg – Top 24/7-Ziel!)" if e.hat_leerstand_hinweis else ""
+                    await send_telegram(
+                        f"➕ <b>Neuer Scout-Treffer hinzugefügt!</b>{leer_badge}\n\n"
+                        f"🏢 <b>{html.escape(e.firmenname)}</b>\n"
+                        f"📍 {html.escape(e.bezirk_hinweis)} ({c['dist_km']} km zum Hbf)\n"
+                        f"⚙️ Technik: <code>{p['fetch_backend']}</code> | Alle {payload['time_between_check']['minutes']} Min.\n"
+                        f"💡 <i>{html.escape(e.kurzbegruendung[:160])}</i>\n"
+                        f"🔗 {html.escape(p['url'])}",
+                        reply_markup=markup,
+                    )
+        else:
+            await send_telegram(
+                f"🔎 <b>Scout-Vorschlag:</b> <b>{html.escape(e.firmenname)}</b> ({c['dist_km']} km zum Hbf)\n"
+                f"🔗 {html.escape(p['url'])}\n<i>{html.escape(e.kurzbegruendung[:140])}</i>\n"
+                f"Aufnehmen mit: <code>/add {html.escape(p['url'])}</code>"
+            )
+
+    if manual and added == 0:
+        await send_telegram("ℹ️ Scout-Durchlauf fertig – aktuell keine weiteren neuen Münchner Verwaltungen in diesem Batch gefunden.")
+
+
 async def handle_callback_query(cb: dict):
     cb_id = cb.get("id", "")
     from_id = str((cb.get("from") or {}).get("id", ""))
@@ -1315,6 +1409,20 @@ async def handle_callback_query(cb: dict):
             add_learned_rule(f"Angebote im Preisniveau wie '{preis}' bei '{t}' eher ablehnen.")
             answer_txt = "💶 Gelernt! Strengerer Preis-Check."
         await send_telegram(f"🧠 <b>Feedback gelernt:</b> {html.escape(answer_txt)}\n<i>Regeln ansehen mit /regeln</i>")
+
+    elif data.startswith("sdel:"):
+        w_uuid = data.split(":", 1)[1]
+        cd_key = get_cd_api_key()
+        if cd_key and w_uuid:
+            async with httpx.AsyncClient(timeout=15) as client:
+                wr = await client.get(f"{CD_API_BASE}/watch/{w_uuid}", headers={"x-api-key": cd_key})
+                if wr.status_code == 200:
+                    w_url = (wr.json() or {}).get("url", "")
+                    if w_url:
+                        add_blacklist(w_url, "Manuell vom Nutzer aus Scout entfernt")
+                dr = await client.delete(f"{CD_API_BASE}/watch/{w_uuid}", headers={"x-api-key": cd_key})
+            answer_txt = "🗑 Gelöscht & auf Blacklist gesetzt!" if dr.status_code in (200, 204) else "Schon gelöscht."
+            await send_telegram(f"🗑 {html.escape(answer_txt)}")
 
     async with httpx.AsyncClient(timeout=10) as client:
         await client.post(
@@ -1382,6 +1490,10 @@ async def handle_telegram_command(text: str):
         await cmd_stats()
     elif cmd == "/heilen":
         await run_auto_heal(manual=True)
+    elif cmd == "/scout":
+        auto_mode = arg.lower() != "check"
+        dist_arg = "" if arg.lower() in ("check", "auto") else arg
+        asyncio.create_task(run_scout_command(auto_add=auto_mode, district=dist_arg, manual=True))
     elif cmd in ("/agent", "/entdecken", "/lernen"):
         if arg.lower() == "json":
             raw_j = get_state("last_agent_plan_json", "")
