@@ -1839,6 +1839,50 @@ def extract_fredy_items(payload) -> list[dict]:
     return []
 
 
+
+async def fetch_immoscout_contact_details(expose_url: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Zieht aus einem ImmoScout-Exposé die echte E-Mail, Telefonnummer und Firmennamen
+    des Anbieters aus den gesetzlichen Angaben / Impressum.
+    """
+    try:
+        status, final_u, raw_html = await scout.fetch_page(expose_url)
+        if status != 200 or len(raw_html) < 500:
+            return None, None, None
+
+        soup = BeautifulSoup(raw_html, "html.parser")
+        email_found = None
+        phone_found = None
+        company_found = None
+
+        # 1. Nach rechtlichen Hinweisen / Impressumsblock suchen
+        legal_block = soup.find(class_=re.compile(r"(legal|imprint|anbieter|realtor|contact)", re.I))
+        search_text = legal_block.get_text(" ", strip=True) if legal_block else raw_html
+
+        # E-Mail mit Regex extrahieren (keine noreply / immoscout-internen Mails)
+        emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", search_text)
+        for em in emails:
+            em_low = em.lower()
+            if not any(ign in em_low for ign in ("immobilienscout24", "is24", "noreply", "no-reply", "datenschutz", "spamschutz")):
+                email_found = em.strip()
+                break
+
+        # Telefonnummer suchen
+        phones = re.findall(r"(?:(?:\+49|0049|0)\s*(?:\(?\d+\)?\s*[\d\s/-]{5,}))", search_text)
+        if phones:
+            phone_found = phones[0].strip()
+
+        # Firmenname suchen
+        comp_tag = soup.find(class_=re.compile(r"(company-name|realtor-name|firmname)", re.I))
+        if comp_tag:
+            company_found = comp_tag.get_text(strip=True)
+
+        return email_found, phone_found, company_found
+    except Exception as exc:
+        logger.warning("ImmoScout Impressum-Scrape Hinweis: %s", exc)
+        return None, None, None
+
+
 async def process_fredy_items(items: list[dict]):
     for item in items:
         try:
@@ -1868,8 +1912,18 @@ async def process_fredy_items(items: list[dict]):
                 continue
 
             if is_real_key(get_gemini_key()):
+                # Falls ImmoScout-Link: Versuche echte Impressums-E-Mail zu holen!
+                immo_email = None
+                immo_phone = None
+                if "immobilienscout24.de" in link.lower():
+                    immo_email, immo_phone, _ = await fetch_immoscout_contact_details(link)
+
                 try:
                     result = await asyncio.to_thread(analyze_with_gemini, f"{provider}: {title}", link, item_json)
+                    if immo_email and not result.contact_email:
+                        result.contact_email = immo_email
+                    if immo_phone and not result.contact_phone:
+                        result.contact_phone = immo_phone
                 except Exception:
                     continue
 
