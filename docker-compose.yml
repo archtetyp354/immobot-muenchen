@@ -10,7 +10,7 @@ services:
     environment:
       - PLAYWRIGHT_DRIVER_URL=ws://browser-sockpuppet-chrome:3000
       - TZ=Europe/Berlin
-      - FETCH_WORKERS=3
+      - FETCH_WORKERS=6
       - HIDE_REFERER=true
       - ALLOW_IANA_RESTRICTED_ADDRESSES=true
     depends_on:
@@ -30,7 +30,7 @@ services:
       - SCREEN_WIDTH=1920
       - SCREEN_HEIGHT=1024
       - SCREEN_DEPTH=16
-      - MAX_CONCURRENT_CHROME_PROCESSES=2
+      - MAX_CONCURRENT_CHROME_PROCESSES=5
       - STATS_REFRESH_SECONDS=120
 
   brain:
@@ -44,6 +44,7 @@ services:
     volumes:
       - ./brain-data:/app/data
       - ./profil.txt:/app/profil.txt:ro
+      - /var/run/docker.sock:/var/run/docker.sock
 
   fredy:
     image: ghcr.io/orangecoding/fredy:master
