@@ -1,0 +1,11 @@
+.env
+profil.txt
+schluessel.txt
+*.zip
+.DS_Store
+__pycache__/
+*.pyc
+changedetection-data/
+brain-data/
+fredy-conf/
+fredy-db/

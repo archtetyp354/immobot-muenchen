@@ -1,0 +1,60 @@
+services:
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io:latest
+    container_name: changedetection
+    restart: unless-stopped
+    ports:
+      - "5050:5000"
+    volumes:
+      - ./changedetection-data:/datastore
+    environment:
+      - PLAYWRIGHT_DRIVER_URL=ws://browser-sockpuppet-chrome:3000
+      - TZ=Europe/Berlin
+      - FETCH_WORKERS=3
+      - HIDE_REFERER=true
+      - ALLOW_IANA_RESTRICTED_ADDRESSES=true
+    depends_on:
+      - browser-sockpuppet-chrome
+      - brain
+
+  browser-sockpuppet-chrome:
+    image: dgtlmoon/sockpuppetbrowser:latest
+    container_name: changedetection-chrome
+    hostname: browser-sockpuppet-chrome
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+    tmpfs:
+      - /tmp
+    environment:
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1024
+      - SCREEN_DEPTH=16
+      - MAX_CONCURRENT_CHROME_PROCESSES=2
+      - STATS_REFRESH_SECONDS=120
+
+  brain:
+    build: ./brain
+    container_name: immobot-brain
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./brain-data:/app/data
+      - ./profil.txt:/app/profil.txt:ro
+
+  fredy:
+    image: ghcr.io/orangecoding/fredy:master
+    container_name: fredy
+    restart: unless-stopped
+    ports:
+      - "9998:9998"
+    volumes:
+      - ./fredy-conf:/conf
+      - ./fredy-db:/db
+    deploy:
+      resources:
+        limits:
+          memory: 1G
