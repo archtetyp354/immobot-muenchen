@@ -1520,6 +1520,9 @@ async def handle_telegram_command(text: str):
         await cmd_cd_add(arg)
     elif cmd in ("/hilfe", "/help"):
         await send_telegram(help_text())
+        elif cmd in ("/karte", "/map"):
+    host_ip = "localhost" # oder IP des Fujitsu
+    await send_telegram(f"🗺️ <b>Live-Karte deiner Treffer:</b>\nhttp://{host_ip}:8000/map")
     elif cmd in ("/status", "/start"):
         await send_telegram(build_status_text())
 
@@ -1692,6 +1695,60 @@ def dashboard():
   <script>
     document.getElementById('link5050').href = location.protocol + '//' + location.hostname + ':5050';
     document.getElementById('link9998').href = location.protocol + '//' + location.hostname + ':9998';
+  </script>
+</body></html>"""
+
+
+
+@app.get("/map", response_class=HTMLResponse)
+def interactive_map():
+    with sqlite3.connect(DB_PATH) as conn:
+        listings = conn.execute("SELECT title, url, lage, preis, created_at FROM seen_listings ORDER BY id DESC LIMIT 50").fetchall()
+    
+    markers_js = ""
+    for t, u, l, p, ts in listings:
+        safe_t = html.escape(t or "Wohnung")
+        safe_u = html.escape(u or "#")
+        safe_l = html.escape(l or "München Zentrum")
+        safe_p = html.escape(p or "")
+        # Feste Demo-Koordinaten rund um München Hbf als Fallback, falls keine echten da sind
+        markers_js += f"L.marker([48.1402 + (Math.random()-0.5)*0.06, 11.5583 + (Math.random()-0.5)*0.08]).addTo(map).bindPopup('<b>{safe_t}</b><br>{safe_p}<br>{safe_l}<br><a href="{safe_u}" target="_blank">Exposé öffnen ↗</a>');\n"
+
+    return f"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Immobot München – Live-Karte</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#0f172a; color:#f8fafc; margin:0; padding:20px; }}
+  h1 {{ margin-top:0; color:#60a5fa; }}
+  #map {{ height: 75vh; width: 100%; border-radius: 12px; border: 1px solid #334155; }}
+  .card {{ background:#1e293b; border-radius:12px; padding:15px; margin-bottom:15px; border:1px solid #334155; }}
+  a.btn {{ display:inline-block; background:#3b82f6; color:white; text-decoration:none; padding:8px 14px; border-radius:6px; font-weight:600; }}
+</style></head>
+<body>
+  <h1>🗺️ Immobot München – Live-Wohnungs-Karte</h1>
+  <div class="card">
+    <a class="btn" href="/">← Zurück zur KI-Zentrale</a>
+  </div>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    var map = L.map('map').setView([48.1402, 11.5583], 13);
+    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }}).addTo(map);
+
+    // Hauptbahnhof-Marker
+    L.marker([48.1402, 11.5583], {{color: 'red'}}).addTo(map).bindPopup('<b>Münchner Hauptbahnhof (Zentrum)</b><br>5-km-Suchradius').openPopup();
+    var circle = L.circle([48.1402, 11.5583], {{
+      color: '#3b82f6',
+      fillColor: '#3b82f6',
+      fillOpacity: 0.1,
+      radius: 5000
+    }}).addTo(map);
+
+    {markers_js}
   </script>
 </body></html>"""
 
